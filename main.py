@@ -36,50 +36,63 @@ def callback():
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    # 1. ดึงไฟล์รูปจาก LINE
-    with ApiClient(configuration) as api_client:
-        line_bot_blob_api = MessagingApiBlob(api_client)
-        image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
+    try:
+        # 1. ดึงไฟล์รูปจาก LINE
+        with ApiClient(configuration) as api_client:
+            line_bot_blob_api = MessagingApiBlob(api_client)
+            image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
 
-    # 2. ส่งให้ Gemini วิเคราะห์เส้นทางและพื้นที่ทางผ่าน
-    prompt = """
-    คุณคือผู้ช่วยคำนวณเส้นทางสำหรับคนขับรถส่งของในกรุงเทพฯ และปริมณฑล
-    จงอ่านภาพออเดอร์นี้ ระบุจุดรับ (ต้นทาง) และจุดส่ง (ปลายทาง)
-    จากนั้นวิเคราะห์เส้นทางขับขี่ด้วยเงื่อนไขสำคัญต่อไปนี้:
-    1. บังคับวิ่งเฉพาะ "ถนนพื้นราบ" เท่านั้น (ห้ามคิดคำนวณบนทางด่วนเด็ดขาด)
-    2. ระบุ "เขต/อำเภอทางผ่าน" ในระยะเบี่ยงเบนไม่เกิน 1-2 กิโลเมตรจากถนนเส้นหลัก
-    3. ระบุ "เขต/อำเภอปลายทาง"
-    4. ระบุ "เขตยืดระยะ" คือพื้นที่หรืออำเภอ/เขตที่อยู่เลยจุดหมายปลายทางออกไปในทิศทางเดียวกันและคุ้มค่าที่จะรับงานต่อเนื่อง
+        # 2. ให้ Gemini วิเคราะห์
+        prompt = """
+        คุณคือผู้ช่วยคำนวณเส้นทางสำหรับคนขับรถส่งของในกรุงเทพฯ และปริมณฑล
+        จงอ่านภาพออเดอร์นี้ ระบุจุดรับ (ต้นทาง) และจุดส่ง (ปลายทาง)
+        จากนั้นวิเคราะห์เส้นทางขับขี่ด้วยเงื่อนไขสำคัญต่อไปนี้:
+        1. บังคับวิ่งเฉพาะ "ถนนพื้นราบ" เท่านั้น (ห้ามคิดคำนวณบนทางด่วนเด็ดขาด)
+        2. ระบุ "เขต/อำเภอทางผ่าน" ในระยะเบี่ยงเบนไม่เกิน 1-2 กิโลเมตรจากถนนเส้นหลัก
+        3. ระบุ "เขต/อำเภอปลายทาง"
+        4. ระบุ "เขตยืดระยะ" คือพื้นที่หรืออำเภอ/เขตที่อยู่เลยจุดหมายปลายทางออกไปในทิศทางเดียวกันและคุ้มค่าที่จะรับงานต่อเนื่อง
 
-    ตอบกลับในรูปแบบข้อความกระชับ ตรงไปตรงมา ไม่มีคำทักทายหรือคำเกริ่นนำ ตามรูปแบบนี้:
-    📍 เขตทางผ่าน (พื้นราบ):
-    - ...
-    🎯 เขตปลายทาง:
-    - ...
-    🚀 เขตยืดระยะ (ไปต่อทิศเดิม):
-    - ...
-    """
+        ตอบกลับในรูปแบบข้อความกระชับ ตรงไปตรงมา ไม่มีคำทักทายหรือคำเกริ่นนำ ตามรูปแบบนี้:
+        📍 เขตทางผ่าน (พื้นราบ):
+        - ...
+        🎯 เขตปลายทาง:
+        - ...
+        🚀 เขตยืดระยะ (ไปต่อทิศเดิม):
+        - ...
+        """
 
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=[
-            types.Part.from_bytes(
-                data=image_bytes,
-                mime_type='image/jpeg',
-            ),
-            prompt
-        ]
-    )
-
-    # 3. ตอบกลับเข้า LINE
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-        line_bot_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text=response.text.strip())]
-            )
+        response = client.models.generate_content(
+            model='gemini-2.5-flash',
+            contents=[
+                types.Part.from_bytes(
+                    data=image_bytes,
+                    mime_type='image/jpeg',
+                ),
+                prompt
+            ]
         )
+
+        reply_text = response.text.strip() if response.text else "ขออภัย ไม่สามารถอ่านข้อมูลเส้นทางได้"
+
+        # 3. ตอบกลับ LINE
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+            )
+    except Exception as e:
+        print(f"Error: {e}")
+        with ApiClient(configuration) as api_client:
+            line_bot_api = MessagingApi(api_client)
+            line_bot_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=f"ระบบขัดข้องชั่วคราว: {str(e)}")]
+                )
+            )
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
