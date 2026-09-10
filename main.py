@@ -1,7 +1,7 @@
 import os
-import json
 from flask import Flask, request, abort
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 from linebot.v3 import WebhookHandler
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import (
@@ -16,12 +16,11 @@ from linebot.v3.webhooks import MessageEvent, ImageMessageContent
 
 app = Flask(__name__)
 
-# ดึงค่าจาก Environment Variables
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-genai.configure(api_key=GEMINI_API_KEY)
+client = genai.Client(api_key=GEMINI_API_KEY)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -37,13 +36,12 @@ def callback():
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    # 1. ดึงภาพจาก LINE
+    # 1. ดึงไฟล์รูปจาก LINE
     with ApiClient(configuration) as api_client:
         line_bot_blob_api = MessagingApiBlob(api_client)
-        image_content = line_bot_blob_api.get_message_content(message_id=event.message.id)
+        image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
 
-    # 2. ส่งภาพให้ Gemini วิเคราะห์เส้นทางพื้นราบและยืดระยะ
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    # 2. ส่งให้ Gemini วิเคราะห์เส้นทางและพื้นที่ทางผ่าน
     prompt = """
     คุณคือผู้ช่วยคำนวณเส้นทางสำหรับคนขับรถส่งของในกรุงเทพฯ และปริมณฑล
     จงอ่านภาพออเดอร์นี้ ระบุจุดรับ (ต้นทาง) และจุดส่ง (ปลายทาง)
@@ -61,13 +59,19 @@ def handle_image_message(event):
     🚀 เขตยืดระยะ (ไปต่อทิศเดิม):
     - ...
     """
-    
-    response = model.generate_content([
-        {'mime_type': 'image/jpeg', 'data': image_content},
-        prompt
-    ])
 
-    # 3. ตอบข้อความกลับไปยังผู้ใช้ใน LINE
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=[
+            types.Part.from_bytes(
+                data=image_bytes,
+                mime_type='image/jpeg',
+            ),
+            prompt
+        ]
+    )
+
+    # 3. ตอบกลับเข้า LINE
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
         line_bot_api.reply_message(
