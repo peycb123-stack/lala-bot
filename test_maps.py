@@ -3,7 +3,7 @@ from datetime import datetime
 import re
 
 # 1. นำ API Key ที่ก็อปปี้มาใส่ตรงนี้
-MAPS_API_KEY = "ใส่_API_KEY_ของคุณตรงนี้_AIza..."
+MAPS_API_KEY = "AIzaSyDkOKGBWAJPCh7Wobl9pCAwDB_f5_I5EBM"
 gmaps = googlemaps.Client(key=MAPS_API_KEY)
 
 def test_realtime_route(origin_text, destination_text):
