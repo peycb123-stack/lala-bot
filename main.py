@@ -1,4 +1,10 @@
 import os
+import googlemaps
+from datetime import datetime
+import re
+
+# ดึง API Key อย่างปลอดภัยจากเว็บ Render ที่เราเพิ่งซ่อนไว้
+gmaps = googlemaps.Client(key=os.environ.get('MAPS_API_KEY'))
 from flask import Flask, request, abort
 from google import genai
 from google.genai import types
@@ -79,75 +85,79 @@ def handle_text_message(event):
             )
         )
 
-# 2. ฟังก์ชันรับรูปภาพและดึงโหมดมาใช้คำนวณ
+# 2. ฟังก์ชันรับรูปภาพและดึงโหมดมาใช้คำนวณ (รวมร่าง Gemini + Google Maps)
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     try:
         user_id = event.source.user_id
-        # ตรวจสอบว่าคนขับเลือกโหมดอะไรไว้ (ถ้ายังไม่เคยเลือก ค่าเริ่มต้นคือรถยนต์)
+        # เช็คโหมดรถ (เผื่ออนาคตเอาไปตั้งค่าหลบทางด่วนให้มอเตอร์ไซค์โดยเฉพาะ)
         mode = user_modes.get(user_id, "car")
 
-        if mode == "car":
-            vehicle_condition = "พาหนะ: รถยนต์ (เน้นถนนสายหลัก ซอยกว้าง รถไม่ติดขัด ห้ามแนะนำซอยแคบ)"
-        else:
-            vehicle_condition = "พาหนะ: มอเตอร์ไซค์ (สามารถแนะนำทางลัด ซอยทะลุ หรือเส้นทางหลบรถติดได้)"
-
+        # 1. ดึงรูปภาพจาก LINE
         with ApiClient(configuration) as api_client:
             line_bot_blob_api = MessagingApiBlob(api_client)
             image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
 
-        route_prompt = f"""
-คุณคือผู้เชี่ยวชาญคำนวณเส้นทางและพื้นที่งานสำหรับคนขับรถส่งของในกรุงเทพฯ และปริมณฑล
-ให้วิเคราะห์ภาพที่ได้รับอย่างละเอียด บอทต้องแยกแยะประเภทของภาพและทำงานตามกรณีใดกรณีหนึ่งดังนี้:
-
-**{vehicle_condition}**
-
-🔴 กรณีที่ 1: ถ้าภาพเป็น "หน้าจอออเดอร์งาน (แอป Lalamove)"
-จงอ่านข้อความเพื่อระบุจุดรับและจุดส่ง จากนั้นวิเคราะห์เส้นทางด้วยเงื่อนไข:
-1. บังคับจำลองเส้นทางบน "ถนนพื้นราบสายหลัก" เท่านั้น (ห้ามคิดคำนวณบนทางด่วนเด็ดขาด)
-2. กฎการเลือกเส้นทาง: ให้คิดเหมือนคนขับรถจริง หลีกเลี่ยงการผ่าใจกลางเมือง (CBD เช่น สีลม สยาม) ที่รถติดหนักหากมีถนนเลี่ยงเมืองหรือถนนสายหลักเส้นอื่นที่ทำเวลาได้ดีกว่า และหากต้องข้ามแม่น้ำ ให้ระบุชื่อสะพานที่ใช้
-3. ระบุ "แขวง/ตำบลทางผ่าน": โดยให้วงเล็บ (ชื่อถนนสายหลัก หรือ สะพาน ที่ใช้ขับผ่านแขวงนั้นๆ) กำกับไว้ด้านหลังเสมอ เพื่อความชัดเจน และต้องอยู่ในระยะเบี่ยงเบนไม่เกิน 1 กม. จากถนนหลัก
-4. ระบุ "แขวง/ตำบลปลายทาง"
-5. ระบุ "แขวง/ตำบลยืดระยะ" (พื้นที่หรืออำเภอที่อยู่เลยจุดหมายปลายทางออกไปในทิศทางเดียวกัน 20-30 กม.)
-
-รูปแบบการตอบ (แสดงเฉพาะข้อมูลด้านล่าง ห้ามมีคำเกริ่นนำ):
-📍 แขวง/ตำบลทางผ่าน (พื้นราบ ≤ 1 กม.):
-- [ชื่อแขวง/ตำบล] ([ชื่อเขต/อำเภอ]) ผ่านเส้น: [ชื่อถนนหลัก/สะพาน]
-🎯 ปลายทาง:
-- [ชื่อแขวง/ตำบล], [ชื่อเขต/อำเภอ]
-🚀 แขวงยืดระยะ (ไปต่อทิศเดิม):
-- [ชื่อแขวง/ตำบล] ([ชื่อเขต/อำเภอ])
-
-🔵 กรณีที่ 2: ถ้าภาพเป็น "แอปแผนที่ (เช่น Google Maps)"
-ผู้ใช้อยู่ในโหมด "ตีรถเปล่า" และต้องการหาชื่อแขวง/ตำบลเพื่อไปตั้งค่าดักงานทางผ่านในแอป
-ให้อ่านเส้นทางนำทาง (เช่น เส้นสีน้ำเงิน) จากภาพ:
-1. "สำคัญมาก": แม้เส้นทางสีน้ำเงินในแผนที่จะลากขึ้นทางด่วนหรือโทลล์เวย์ ให้คุณแปลงเป็น "ชื่อแขวง/ตำบลบนถนนพื้นราบ" ที่วิ่งขนานอยู่ใต้แนวด่วนนั้นแทนเสมอ 
-2. ไล่เรียงรายชื่อ "แขวง/ตำบล" ทางผ่านทั้งหมดตั้งแต่ต้นจนจบ
-
-รูปแบบการตอบ (แสดงเฉพาะข้อมูลด้านล่าง ห้ามมีคำเกริ่นนำ):
-🗺️ เส้นทางตีรถเปล่า (อิงตามแผนที่):
-- ต้นทาง: [ชื่อแขวง/เขต] ➡️ ปลายทาง: [ชื่อแขวง/เขต]
-📍 แขวง/ตำบลทางผ่าน (สำหรับนำไปตั้งค่ารับงาน):
-- [ชื่อแขวง/ตำบล] ([ชื่อเขต/อำเภอ])
-
-⚫ กรณีที่ 3: ภาพไม่เกี่ยวข้องกับออเดอร์ส่งของหรือแผนที่
-รูปแบบการตอบ:
-❌ ขออภัยครับ ภาพนี้ไม่สามารถวิเคราะห์เส้นทางได้ กรุณาส่งหน้าจอใบงาน หรือรูป Google Maps ครับ
-"""
-
+        # 2. ให้ Gemini รุ่น Flash 8B (ตัวไวสุด) ทำหน้าที่แค่ "อ่านตัวหนังสือ" สกัดจุดรับ-ส่ง
+        prompt = "สกัดข้อมูลจากรูปภาพออเดอร์นี้ ขอแค่ชื่อสถานที่ 'จุดรับ' และ 'จุดส่ง' คั่นด้วยเครื่องหมาย | เช่น 'ซอยลาดพร้าว 87 | สมเด็จเจ้าพระยา 7' ห้ามพิมพ์ข้อความอธิบายอื่นๆ หากไม่ใช่รูปออเดอร์ให้ตอบว่า 'ไม่ใช่รูปใบงาน'"
+        
         response = client.models.generate_content(
-            model='gemini-3.6-flash',
+            model='gemini-1.5-flash-8b', # แก้เป็นชื่อรุ่นนี้แล้วเพื่อความเร็ว 1-3 วินาที
             contents=[
-                types.Part.from_bytes(
-                    data=image_bytes,
-                    mime_type='image/jpeg',
-                ),
-                route_prompt
+                types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
+                prompt
             ]
         )
+        
+        extracted_text = response.text.strip()
+        
+        # ถ้ารูปที่ส่งมาไม่ใช่ใบงาน
+        if "ไม่ใช่รูปใบงาน" in extracted_text:
+            reply_text = "❌ ขออภัยครับ ภาพนี้ไม่สามารถวิเคราะห์เส้นทางได้ กรุณาส่งหน้าจอใบงานครับ"
+        else:
+            # 3. นำจุดรับ-ส่ง โยนให้ Google Maps เป็นคนใช้สมองคำนวณทางเลี่ยงรถติด
+            try:
+                origin_text, destination_text = extracted_text.split('|')
+                
+                now = datetime.now()
+                directions = gmaps.directions(
+                    origin=origin_text.strip(),
+                    destination=destination_text.strip(),
+                    mode="driving",
+                    avoid="tolls", # บังคับเลี่ยงทางด่วน ให้วิ่งพื้นราบ
+                    departure_time=now, # ดึงสภาพจราจรแบบเรียลไทม์
+                    language="th"
+                )
 
-        reply_text = response.text.strip() if response.text else "ขออภัย ไม่สามารถอ่านข้อมูลเส้นทางได้"
+                if directions:
+                    route = directions[0]['legs'][0]
+                    distance = route['distance']['text']
+                    duration = route.get('duration_in_traffic', route['duration'])['text']
+                    
+                    # ดึงชื่อถนนที่ต้องผ่าน
+                    passed_roads = []
+                    for step in route['steps']:
+                        clean_text = re.sub('<[^<]+>', '', step['html_instructions'])
+                        if any(keyword in clean_text for keyword in ["ถนน", "ซอย", "สะพาน"]):
+                            if clean_text not in passed_roads:
+                                passed_roads.append(f"   - {clean_text}")
+                    
+                    roads_str = "\n".join(passed_roads)
+                    # สรุปข้อความตอบกลับ
+                    reply_text = (f"📍 รับ: {origin_text.strip()}\n"
+                                  f"🎯 ส่ง: {destination_text.strip()}\n"
+                                  f"📏 ระยะทาง: {distance}\n"
+                                  f"⏱️ เวลา (รวมรถติด): {duration}\n"
+                                  f"🗺️ ถนนหลักที่ผ่าน:\n{roads_str}")
+                else:
+                    reply_text = "❌ Google Maps ไม่พบเส้นทางบนพื้นราบ"
 
+            except ValueError:
+                reply_text = f"❌ อ่านพิกัดไม่สำเร็จ ข้อมูลที่ได้: {extracted_text}"
+            except Exception as e:
+                reply_text = f"❌ เกิดข้อผิดพลาดฝั่ง Maps: {e}"
+
+        # 4. ส่งข้อความตอบกลับเข้า LINE
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
@@ -156,6 +166,7 @@ def handle_image_message(event):
                     messages=[TextMessage(text=reply_text)]
                 )
             )
+
     except Exception as e:
         print(f"Error: {e}")
         with ApiClient(configuration) as api_client:
