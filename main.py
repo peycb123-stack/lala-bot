@@ -1,6 +1,7 @@
 import os
 import re
 import urllib.parse
+import time  # สำหรับหน่วงเวลา
 from datetime import datetime
 
 import googlemaps
@@ -94,17 +95,32 @@ def handle_image_message(event):
             line_bot_blob_api = MessagingApiBlob(api_client)
             image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
 
-        # 2. ส่งรูปให้ Gemini (แนะนำใช้รุ่น 8b เพื่อความเร็วสูงสุด 1-2 วินาที)
+        # 2. ส่งรูปให้ Gemini พร้อมระบบแอบส่งซ้ำอัตโนมัติ
         prompt = "สกัดข้อมูลจากรูปภาพออเดอร์นี้ ขอแค่ชื่อสถานที่ 'จุดรับ' และ 'จุดส่ง' คั่นด้วยเครื่องหมาย | เช่น 'ซอยลาดพร้าว 87 | สมเด็จเจ้าพระยา 7' ห้ามพิมพ์ข้อความอธิบายอื่นๆ หากไม่ใช่รูปออเดอร์ให้ตอบว่า 'ไม่ใช่รูปใบงาน'"
         
-        response = client.models.generate_content(
-            model='gemini-3.1-flash-lite', 
-            contents=[
-                types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
-                prompt
-            ]
-        )
+        max_retries = 3
+        retry_delay = 2
+        response = None
         
+        for attempt in range(max_retries):
+            try:
+                response = client.models.generate_content(
+                    model='gemini-3.1-flash-lite', 
+                    contents=[
+                        types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
+                        prompt
+                    ]
+                )
+                break  # ถ้าทำงานสำเร็จ ให้หลุดออกจากลูปทันที
+            except Exception as e:
+                error_msg = str(e)
+                if '503' in error_msg or '429' in error_msg:
+                    if attempt < max_retries - 1:
+                        print(f"คิวเต็ม รอ 2 วิแล้วลองใหม่ (ครั้งที่ {attempt+1})")
+                        time.sleep(retry_delay)
+                        continue
+                raise e  # ถ้าพยายามครบ 3 ครั้งยังไม่ได้ ค่อยเด้ง Error กลับไปที่ LINE
+
         extracted_text = response.text.strip()
         
         if "ไม่ใช่รูปใบงาน" in extracted_text:
@@ -113,12 +129,15 @@ def handle_image_message(event):
             try:
                 origin_text, destination_text = extracted_text.split('|')
                 
+                # แปลงโหมดของบอท ให้เป็นคำศัพท์ที่ Google Maps เข้าใจ
+                gmaps_mode = "driving" if mode == "car" else "two_wheeler"
+                
                 # 3. ส่งให้ Google Maps
                 now = datetime.now()
                 directions = gmaps.directions(
                     origin=origin_text.strip(),
                     destination=destination_text.strip(),
-                    mode="driving",
+                    mode=gmaps_mode,  # ใช้ตัวแปรโหมดที่แปลงแล้ว
                     avoid="tolls", 
                     departure_time=now,
                     language="th"
@@ -138,10 +157,12 @@ def handle_image_message(event):
                     
                     roads_str = "\n".join(passed_roads)
                     
-                    # 4. สร้าง URL ลิงก์สำหรับกดเปิดแอปแผนที่นำทาง
+                    # 4. สร้าง URL ลิงก์สำหรับกดเปิดแอปแผนที่นำทาง (เพิ่ม travelmode)
                     origin_url = urllib.parse.quote(origin_text.strip())
                     dest_url = urllib.parse.quote(destination_text.strip())
-                    maps_link = f"https://www.google.com/maps/dir/?api=1&origin={origin_url}&destination={dest_url}&dir_action=navigate"
+                    
+                    # ถ้าเป็นมอเตอร์ไซค์ ลิงก์ที่กดเปิดแอป Google Maps จะเซ็ตเป็นมอเตอร์ไซค์ให้เลย
+                    maps_link = f"https://www.google.com/maps/dir/?api=1&origin={origin_url}&destination={dest_url}&travelmode={gmaps_mode}&dir_action=navigate"
 
                     # สรุปข้อความตอบกลับ
                     reply_text = (f"📍 รับ: {origin_text.strip()}\n"
