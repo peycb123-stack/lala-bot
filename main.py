@@ -1,7 +1,6 @@
 import os
 import re
-import urllib.parse
-import time  # สำหรับหน่วงเวลา
+import time
 from datetime import datetime
 
 import googlemaps
@@ -22,7 +21,7 @@ from linebot.v3.webhooks import MessageEvent, ImageMessageContent, TextMessageCo
 
 app = Flask(__name__)
 
-# ดึง API Key อย่างปลอดภัยจากเว็บ Render
+# ดึง API Key
 LINE_CHANNEL_ACCESS_TOKEN = os.environ.get("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
@@ -34,7 +33,6 @@ gmaps = googlemaps.Client(key=MAPS_API_KEY)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# สร้างพื้นที่จดจำโหมดของคนขับ (จะถูกรีเซ็ตหาก Render Sleep)
 user_modes = {}
 
 @app.route("/callback", methods=['POST'])
@@ -47,7 +45,6 @@ def callback():
         abort(400)
     return 'OK'
 
-# 1. ฟังก์ชันรับข้อความ เพื่อสลับโหมด
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     text = event.message.text.strip()
@@ -57,22 +54,16 @@ def handle_text_message(event):
         current_mode = user_modes.get(user_id, "car")
         if current_mode == "car":
             user_modes[user_id] = "motorcycle"
-            reply = "🛵 สลับเป็นโหมด 'มอเตอร์ไซค์' เรียบร้อยครับ\nระบบจะเปิดทางลัดและซอยทะลุให้ในการส่งรูปครั้งต่อไป"
+            reply = "🛵 โหมด: มอเตอร์ไซค์"
         else:
             user_modes[user_id] = "car"
-            reply = "🚗 สลับเป็นโหมด 'รถยนต์' เรียบร้อยครับ\nระบบจะเน้นถนนเมนหลักและซอยกว้างให้ในการส่งรูปครั้งต่อไป"
-            
+            reply = "🚗 โหมด: รถยนต์"
     elif text == "เช็คสถานะ":
-        reply = "🟢 สถานะของคุณ: ทดลองใช้งานฟรี\n(ระบบสมาชิกเต็มรูปแบบกำลังจะเปิดให้บริการเร็วๆ นี้)"
-        
+        reply = "🟢 สถานะ: พร้อมใช้งาน"
     elif text == "วิธีใช้งาน":
-        reply = "📌 วิธีใช้งานผู้ช่วยเส้นทาง:\n1. แคปหน้าจอออเดอร์ให้เห็นจุดรับ-ส่ง\n2. ส่งรูปเข้ามาในแชทนี้แล้วรอระบบคำนวณ 1-3 วินาที\n3. กดปุ่ม 'สลับโหมดรถ' หากต้องการเปลี่ยนประเภทรถ"
-        
-    elif text == "ต่ออายุ":
-        reply = "💳 ต่ออายุรายเดือน (99 บาท)\n\nโอนเงินเข้าบัญชี:\nธนาคาร: กสิกรไทย\nเลขบัญชี: 123-4-56789-0\nชื่อบัญชี: บจก. ลาล่าบอท\n\nใครโอนแล้วรบกวนส่งสลิปเข้ามาในแชทนี้ได้เลยครับ"
-        
+        reply = "ส่งรูปใบงานเพื่อดูแนวแขวง/เขต"
     else:
-        reply = "หากต้องการวิเคราะห์เส้นทาง กรุณาส่งเป็น 'รูปภาพออเดอร์' เข้ามาได้เลยครับ"
+        reply = "ส่งรูปใบงานเข้ามาได้เลยครับ"
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -83,61 +74,55 @@ def handle_text_message(event):
             )
         )
 
-# 2. ฟังก์ชันรับรูปภาพและดึงโหมดมาใช้คำนวณ
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     try:
         user_id = event.source.user_id
         mode = user_modes.get(user_id, "car")
 
-        # 1. ดึงรูปภาพจาก LINE
         with ApiClient(configuration) as api_client:
             line_bot_blob_api = MessagingApiBlob(api_client)
             image_bytes = line_bot_blob_api.get_message_content(message_id=event.message.id)
 
-        # 2. ส่งรูปให้ Gemini พร้อมระบบแอบส่งซ้ำอัตโนมัติ
-        prompt = "สกัดข้อมูลจากรูปภาพออเดอร์นี้ ขอแค่ชื่อสถานที่ 'จุดรับ' และ 'จุดส่ง' คั่นด้วยเครื่องหมาย | เช่น 'ซอยลาดพร้าว 87 | สมเด็จเจ้าพระยา 7' ห้ามพิมพ์ข้อความอธิบายอื่นๆ หากไม่ใช่รูปออเดอร์ให้ตอบว่า 'ไม่ใช่รูปใบงาน'"
+        # Gemini เด้งที่ 1: อ่านจุดรับส่งจากภาพ
+        prompt_1 = "สกัดข้อมูลจากรูปภาพออเดอร์นี้ ขอแค่ชื่อสถานที่ 'จุดรับ' และ 'จุดส่ง' คั่นด้วยเครื่องหมาย | เช่น 'ซอยลาดพร้าว 87 | สมเด็จเจ้าพระยา 7' ห้ามพิมพ์ข้อความอธิบายอื่นๆ หากไม่ใช่รูปออเดอร์ให้ตอบว่า 'ไม่ใช่รูปใบงาน'"
         
         max_retries = 3
         retry_delay = 2
-        response = None
+        response_1 = None
         
         for attempt in range(max_retries):
             try:
-                response = client.models.generate_content(
+                response_1 = client.models.generate_content(
                     model='gemini-3.1-flash-lite', 
                     contents=[
                         types.Part.from_bytes(data=image_bytes, mime_type='image/jpeg'),
-                        prompt
+                        prompt_1
                     ]
                 )
-                break  # ถ้าทำงานสำเร็จ ให้หลุดออกจากลูปทันที
+                break
             except Exception as e:
-                error_msg = str(e)
-                if '503' in error_msg or '429' in error_msg:
+                if '503' in str(e) or '429' in str(e):
                     if attempt < max_retries - 1:
-                        print(f"คิวเต็ม รอ 2 วิแล้วลองใหม่ (ครั้งที่ {attempt+1})")
                         time.sleep(retry_delay)
                         continue
-                raise e  # ถ้าพยายามครบ 3 ครั้งยังไม่ได้ ค่อยเด้ง Error กลับไปที่ LINE
+                raise e
 
-        extracted_text = response.text.strip()
+        extracted_text = response_1.text.strip()
         
         if "ไม่ใช่รูปใบงาน" in extracted_text:
-            reply_text = "❌ ขออภัยครับ ภาพนี้ไม่สามารถวิเคราะห์เส้นทางได้ กรุณาส่งหน้าจอใบงานครับ"
+            reply_text = "❌ กรุณาส่งรูปใบงาน"
         else:
             try:
                 origin_text, destination_text = extracted_text.split('|')
-                
-                # แปลงโหมดของบอท ให้เป็นคำศัพท์ที่ Google Maps เข้าใจ
                 gmaps_mode = "driving" if mode == "car" else "two_wheeler"
                 
-                # 3. ส่งให้ Google Maps
+                # ขอเส้นทางจาก Google Maps
                 now = datetime.now()
                 directions = gmaps.directions(
                     origin=origin_text.strip(),
                     destination=destination_text.strip(),
-                    mode=gmaps_mode,  # ใช้ตัวแปรโหมดที่แปลงแล้ว
+                    mode=gmaps_mode,
                     avoid="tolls", 
                     departure_time=now,
                     language="th"
@@ -148,38 +133,46 @@ def handle_image_message(event):
                     distance = route['distance']['text']
                     duration = route.get('duration_in_traffic', route['duration'])['text']
                     
-                    passed_roads = []
-                    for step in route['steps']:
-                        clean_text = re.sub('<[^<]+>', '', step['html_instructions'])
-                        if any(keyword in clean_text for keyword in ["ถนน", "ซอย", "สะพาน"]):
-                            if clean_text not in passed_roads:
-                                passed_roads.append(f"   - {clean_text}")
+                    # สกัดเฉพาะข้อความเส้นทาง (ลบ HTML ทิ้ง) เพื่อส่งให้ Gemini
+                    step_texts = [re.sub('<[^<]+>', '', step['html_instructions']) for step in route['steps']]
+                    full_route_text = ", ".join(step_texts)
                     
-                    roads_str = "\n".join(passed_roads)
+                    # Gemini เด้งที่ 2: แปลงเส้นทางถนนเป็น เขต/แขวง
+                    prompt_2 = (f"นี่คือคำแนะนำเส้นทางขับรถ: {full_route_text}\n"
+                                "จงแปลงเส้นทางนี้เป็นชื่อ 'แขวง/เขต' หรือ 'ตำบล/อำเภอ' ที่ขับผ่านหรืออยู่ในรัศมี 1 กม. "
+                                "เรียงลำดับจากต้นทางไปปลายทาง ตอบให้สั้นที่สุดแบบนี้: แขวงA > เขตB > ตำบลC "
+                                "ห้ามพิมพ์คำอธิบายหรือคำเกริ่นนำใดๆ เด็ดขาด")
                     
-                    # 4. สร้าง URL ลิงก์สำหรับกดเปิดแอปแผนที่นำทาง (เพิ่ม travelmode)
-                    origin_url = urllib.parse.quote(origin_text.strip())
-                    dest_url = urllib.parse.quote(destination_text.strip())
-                    
-                    # ถ้าเป็นมอเตอร์ไซค์ ลิงก์ที่กดเปิดแอป Google Maps จะเซ็ตเป็นมอเตอร์ไซค์ให้เลย
-                    maps_link = f"https://www.google.com/maps/dir/?api=1&origin={origin_url}&destination={dest_url}&travelmode={gmaps_mode}&dir_action=navigate"
+                    response_2 = None
+                    for attempt in range(max_retries):
+                        try:
+                            response_2 = client.models.generate_content(
+                                model='gemini-3.1-flash-lite', 
+                                contents=prompt_2
+                            )
+                            break
+                        except Exception as e:
+                            if '503' in str(e) or '429' in str(e):
+                                if attempt < max_retries - 1:
+                                    time.sleep(retry_delay)
+                                    continue
+                            raise e
+                            
+                    passed_districts = response_2.text.strip() if response_2 else "ไม่สามารถระบุเขตได้"
 
-                    # สรุปข้อความตอบกลับ
-                    reply_text = (f"📍 รับ: {origin_text.strip()}\n"
-                                  f"🎯 ส่ง: {destination_text.strip()}\n"
-                                  f"📏 ระยะทาง: {distance}\n"
-                                  f"⏱️ เวลา (รวมรถติด): {duration}\n"
-                                  f"🗺️ ถนนหลักที่ผ่าน:\n{roads_str}\n\n"
-                                  f"🚗 กดเพื่อเริ่มนำทาง:\n{maps_link}")
+                    # สรุปข้อความตอบกลับแบบสั้นตาแตก
+                    reply_text = (f"🟢 รับ: {origin_text.strip()}\n"
+                                  f"🔴 ส่ง: {destination_text.strip()}\n"
+                                  f"⏱️ {distance} | {duration}\n"
+                                  f"📍 ผ่าน: {passed_districts}")
                 else:
-                    reply_text = "❌ Google Maps ไม่พบเส้นทางบนพื้นราบ"
+                    reply_text = "❌ ไม่พบเส้นทาง"
 
             except ValueError:
-                reply_text = f"❌ อ่านพิกัดไม่สำเร็จ ข้อมูลที่ได้: {extracted_text}"
+                reply_text = f"❌ อ่านพิกัดไม่สำเร็จ: {extracted_text}"
             except Exception as e:
-                reply_text = f"❌ เกิดข้อผิดพลาดฝั่ง Maps: {e}"
+                reply_text = f"❌ Error ฝั่ง Maps: {e}"
 
-        # 5. ตอบกลับผู้ใช้
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
@@ -190,13 +183,12 @@ def handle_image_message(event):
             )
 
     except Exception as e:
-        print(f"Error: {e}")
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=f"ระบบขัดข้องชั่วคราว: {str(e)}")]
+                    messages=[TextMessage(text=f"ระบบขัดข้อง: {str(e)}")]
                 )
             )
 
