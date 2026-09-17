@@ -33,6 +33,7 @@ gmaps = googlemaps.Client(key=MAPS_API_KEY)
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# สร้างพื้นที่จดจำโหมดของคนขับ (จะถูกรีเซ็ตหาก Render Sleep)
 user_modes = {}
 
 @app.route("/callback", methods=['POST'])
@@ -45,6 +46,7 @@ def callback():
         abort(400)
     return 'OK'
 
+# 1. ฟังก์ชันรับข้อความตอบกลับเมนูต่างๆ
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     text = event.message.text.strip()
@@ -54,16 +56,22 @@ def handle_text_message(event):
         current_mode = user_modes.get(user_id, "car")
         if current_mode == "car":
             user_modes[user_id] = "motorcycle"
-            reply = "🛵 โหมด: มอเตอร์ไซค์"
+            reply = "🛵 สลับเป็นโหมด 'มอเตอร์ไซค์' เรียบร้อยครับ\nระบบจะหาเส้นทางและเวลาสำหรับมอเตอร์ไซค์ให้ในการส่งรูปครั้งต่อไป"
         else:
             user_modes[user_id] = "car"
-            reply = "🚗 โหมด: รถยนต์"
+            reply = "🚗 สลับเป็นโหมด 'รถยนต์' เรียบร้อยครับ\nระบบจะหาเส้นทางและเวลาสำหรับรถยนต์ให้ในการส่งรูปครั้งต่อไป"
+            
     elif text == "เช็คสถานะ":
-        reply = "🟢 สถานะ: พร้อมใช้งาน"
+        reply = "🟢 สถานะของคุณ: ทดลองใช้งานฟรี\n(ระบบสมาชิกเต็มรูปแบบกำลังจะเปิดให้บริการเร็วๆ นี้)"
+        
     elif text == "วิธีใช้งาน":
-        reply = "ส่งรูปใบงานเพื่อดูแนวแขวง/เขต"
+        reply = "📌 วิธีใช้งานผู้ช่วยเส้นทาง:\n1. แคปหน้าจอออเดอร์ให้เห็นจุดรับ-ส่ง\n2. ส่งรูปเข้ามาในแชทนี้แล้วรอระบบคำนวณ 3-5 วินาที\n3. ระบบจะสรุปชื่อแขวง/เขตที่ขับผ่านเพื่อใช้ดูประกอบการรับงานซ้อน"
+        
+    elif text == "ต่ออายุ":
+        reply = "💳 ต่ออายุรายเดือน (99 บาท)\n\nโอนเงินเข้าบัญชี:\nธนาคาร: กสิกรไทย\nเลขบัญชี: 123-4-56789-0\nชื่อบัญชี: บจก. ลาล่าบอท\n\nใครโอนแล้วรบกวนส่งสลิปเข้ามาในแชทนี้ได้เลยครับ"
+        
     else:
-        reply = "ส่งรูปใบงานเข้ามาได้เลยครับ"
+        reply = "หากต้องการวิเคราะห์เส้นทาง กรุณาส่งเป็น 'รูปภาพใบงาน' เข้ามาได้เลยครับ"
 
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -74,6 +82,7 @@ def handle_text_message(event):
             )
         )
 
+# 2. ฟังก์ชันวิเคราะห์รูปภาพและหาเขตที่ขับผ่าน
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
     try:
@@ -111,7 +120,7 @@ def handle_image_message(event):
         extracted_text = response_1.text.strip()
         
         if "ไม่ใช่รูปใบงาน" in extracted_text:
-            reply_text = "❌ กรุณาส่งรูปใบงาน"
+            reply_text = "❌ ขออภัยครับ ภาพนี้ไม่สามารถวิเคราะห์เส้นทางได้ กรุณาส่งหน้าจอใบงานครับ"
         else:
             try:
                 origin_text, destination_text = extracted_text.split('|')
@@ -133,7 +142,7 @@ def handle_image_message(event):
                     distance = route['distance']['text']
                     duration = route.get('duration_in_traffic', route['duration'])['text']
                     
-                    # สกัดเฉพาะข้อความเส้นทาง (ลบ HTML ทิ้ง) เพื่อส่งให้ Gemini
+                    # สกัดเฉพาะข้อความเส้นทาง (ลบ HTML ทิ้ง) เพื่อส่งให้ Gemini แปลงเป็นเขต
                     step_texts = [re.sub('<[^<]+>', '', step['html_instructions']) for step in route['steps']]
                     full_route_text = ", ".join(step_texts)
                     
@@ -169,9 +178,9 @@ def handle_image_message(event):
                     reply_text = "❌ ไม่พบเส้นทาง"
 
             except ValueError:
-                reply_text = f"❌ อ่านพิกัดไม่สำเร็จ: {extracted_text}"
+                reply_text = f"❌ อ่านพิกัดไม่สำเร็จ ข้อมูลที่ได้: {extracted_text}"
             except Exception as e:
-                reply_text = f"❌ Error ฝั่ง Maps: {e}"
+                reply_text = f"❌ เกิดข้อผิดพลาดฝั่ง Maps: {e}"
 
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
@@ -183,12 +192,13 @@ def handle_image_message(event):
             )
 
     except Exception as e:
+        print(f"Error: {e}")
         with ApiClient(configuration) as api_client:
             line_bot_api = MessagingApi(api_client)
             line_bot_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text=f"ระบบขัดข้อง: {str(e)}")]
+                    messages=[TextMessage(text=f"ระบบขัดข้องชั่วคราว: {str(e)}")]
                 )
             )
 
