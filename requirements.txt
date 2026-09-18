@@ -1,6 +1,8 @@
-flask
-line-bot-sdk
-google-genai
-requests
-gunicorn
-googlemaps
+Flask==3.0.0
+line-bot-sdk==3.5.0
+google-genai==0.3.0
+googlemaps==4.10.0
+requests==2.31.0
+polyline==2.0.1
+shapely==2.0.2
+geopandas==0.14.2
