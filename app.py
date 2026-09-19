@@ -28,14 +28,6 @@ LINE_CHANNEL_SECRET = os.environ.get("LINE_CHANNEL_SECRET")
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# พื้นที่เก็บการตั้งค่าโหมดคนขับ (ชั่วคราวบน RAM)
-user_settings = {}
-
-def get_user_setting(user_id):
-    if user_id not in user_settings:
-        user_settings[user_id] = {"mode": "TWO_WHEELER", "avoid_tolls": True}
-    return user_settings[user_id]
-
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers.get('X-Line-Signature', '')
@@ -46,37 +38,19 @@ def callback():
         abort(400)
     return 'OK'
 
-# --- 1. จัดการข้อความ Text (เมนูตั้งค่า) ---
+# --- 1. จัดการข้อความ Text (เมนูวิธีใช้งาน) ---
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     text = event.message.text.strip()
-    user_id = event.source.user_id
-    setting = get_user_setting(user_id)
 
-    if text == "สลับโหมดรถ":
-        if setting["mode"] == "DRIVE":
-            setting["mode"] = "TWO_WHEELER"
-            reply = "🛵 สลับเป็นโหมด 'มอเตอร์ไซค์' เรียบร้อยครับ"
-        else:
-            setting["mode"] = "DRIVE"
-            reply = "🚗 สลับเป็นโหมด 'รถยนต์' เรียบร้อยครับ"
-            
-    elif text == "สลับทางด่วน":
-        if setting["avoid_tolls"]:
-            setting["avoid_tolls"] = False
-            reply = "🛣️ โหมดทางด่วน: 'อนุญาตให้ขึ้นทางด่วนได้'"
-        else:
-            setting["avoid_tolls"] = True
-            reply = "🛑 โหมดทางด่วน: 'หลีกเลี่ยงทางด่วน'"
-
-    elif text == "เช็คสถานะ":
-        mode_th = "มอเตอร์ไซค์" if setting["mode"] == "TWO_WHEELER" else "รถยนต์"
-        toll_th = "เลี่ยง" if setting["avoid_tolls"] else "ขึ้นได้"
-        reply = f"🟢 สถานะ: พร้อมใช้งาน\n🚗 โหมดรถ: {mode_th}\n🛣️ ทางด่วน: {toll_th}\n\n(ระบบ V.3: ประหยัดค่าแผนที่ & คำนวณพิกัดภูมิศาสตร์จริง)"
-        
-    elif text == "วิธีใช้งาน":
-        reply = "📌 ส่งรูปหน้าจอออเดอร์ให้เห็นจุดรับ-ส่ง\nระบบจะวิเคราะห์เขต/แขวงที่วิ่งผ่านให้ครับ\nพิมพ์ 'สลับโหมดรถ' หรือ 'สลับทางด่วน' เพื่อตั้งค่า"
-        
+    if text == "วิธีใช้งาน":
+        reply = (
+            "🛵 ระบบวิเคราะห์เส้นทางรับ-ส่ง (โหมดมอเตอร์ไซค์)\n\n"
+            "ส่งรูปภาพหน้างานของคุณเข้ามาได้เลย ระบบจะคำนวณเส้นทางให้โดย:\n"
+            "✅ อ้างอิงเส้นทางรถจักรยานยนต์\n"
+            "✅ หลีกเลี่ยงทางด่วนเป็นหลัก\n\n"
+            "📍 ระบบจะแสดงรายชื่อ เขต/แขวง ที่เส้นทางพาดผ่าน เพื่อให้คุณประเมินหางานพ่วงและเส้นทางขากลับได้ง่ายขึ้นครับ"
+        )
     else:
         reply = "หากต้องการวิเคราะห์เส้นทาง กรุณาส่งเป็น 'รูปภาพใบงาน' เข้ามาได้เลยครับ"
 
@@ -90,7 +64,7 @@ def handle_text_message(event):
         )
 
 # --- 2. ฟังก์ชันประมวลผลเบื้องหลัง (ไม่ให้ LINE หมดเวลา) ---
-def process_order_background(user_id, message_id, settings):
+def process_order_background(user_id, message_id):
     try:
         # สเตป A: ดึงไฟล์รูปภาพจาก LINE
         with ApiClient(configuration) as api_client:
@@ -111,29 +85,23 @@ def process_order_background(user_id, message_id, settings):
         pickup_coords = map_engine.get_coordinates(pickup_text)
         dropoff_coords = map_engine.get_coordinates(dropoff_text)
 
-        # สเตป D: ขอเส้นทางขับรถ (Map Engine -> Routes API + Cache)
-        route_result = map_engine.get_route_polyline(
-            pickup_coords, 
-            dropoff_coords, 
-            mode=settings["mode"], 
-            avoid_tolls=settings["avoid_tolls"]
-        )
+        # สเตป D: ขอเส้นทางขับรถ (ส่งแค่จุดรับ-ส่ง เพราะล็อกโหมดรถและเลี่ยงทางด่วนใน map_engine แล้ว)
+        route_result = map_engine.get_route_polyline(pickup_coords, dropoff_coords)
 
         # สเตป E: หาเขตและแขวง (GIS Engine -> ถอดรหัสพิกัดฟัน Polygon ฟรี)
         passed_districts = gis_engine.get_passed_districts(route_result["polyline"])
         route_text = "\n🔹 ".join(passed_districts)
 
         # สเตป F: จัดรูปแบบส่งกลับให้คนขับ
-        mode_icon = "🛵" if settings["mode"] == "TWO_WHEELER" else "🚗"
-        
-        # ตัดข้อความจุดรับ-ส่งให้สั้นลง ไม่ให้รกจอเกินไป
         pickup_show = pickup_text[:35] + "..." if len(pickup_text) > 35 else pickup_text
         dropoff_show = dropoff_text[:35] + "..." if len(dropoff_text) > 35 else dropoff_text
 
         final_reply = (f"🟢 รับ: {pickup_show}\n"
                        f"🔴 ส่ง: {dropoff_show}\n\n"
-                       f"{mode_icon} {route_result['distance_km']} กม. | ⏱️ {route_result['duration_mins']} นาที\n\n"
-                       f"📍 พื้นที่วิ่งผ่าน:\n🔹 {route_text}")
+                       f"🛵 {route_result['distance_km']} กม. | ⏱️ {route_result['duration_mins']} นาที\n"
+                       f"🛑 เส้นทาง: หลีกเลี่ยงทางด่วน\n\n"
+                       f"📍 พื้นที่วิ่งผ่าน:\n🔹 {route_text}\n\n"
+                       f"💡 ส่งงานถัดไปมาได้เลยครับ")
                        
         send_push_message(user_id, final_reply)
 
@@ -158,9 +126,6 @@ def handle_image_message(event):
     user_id = event.source.user_id
     message_id = event.message.id
     
-    # ดึงตั้งค่าปัจจุบัน (ก๊อปปี้ค่าไว้เพื่อไม่ให้ Thread ตีกัน)
-    setting = get_user_setting(user_id).copy()
-    
     # 1. ตอบกลับทันทีภายใน 1-2 วินาที (กันระบบ LINE พัง)
     with ApiClient(configuration) as api_client:
         line_bot_api = MessagingApi(api_client)
@@ -171,8 +136,8 @@ def handle_image_message(event):
             )
         )
         
-    # 2. ปล่อย Thread แบกงานหนักไปคิดเบื้องหลัง
-    thread = threading.Thread(target=process_order_background, args=(user_id, message_id, setting))
+    # 2. ปล่อย Thread แบกงานหนักไปคิดเบื้องหลัง (ไม่ต้องส่ง parameters เรื่องโหมดรถแล้ว)
+    thread = threading.Thread(target=process_order_background, args=(user_id, message_id))
     thread.start()
 
 if __name__ == "__main__":
