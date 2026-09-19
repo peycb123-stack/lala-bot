@@ -64,15 +64,16 @@ def get_coordinates(address):
     
     return lat_lng
 
-def get_route_polyline(pickup_latlng, dropoff_latlng, mode="TWO_WHEELER", avoid_tolls=True):
+# ถอดพารามิเตอร์ mode และ avoid_tolls ออก เพราะเราจะบังคับค่าตายตัวแล้ว
+def get_route_polyline(pickup_latlng, dropoff_latlng):
     """
     ขอเส้นทางและระยะเวลา จาก Google Routes API
-    รองรับ Two-Wheeler อย่างเป็นทางการ
+    ล็อกโหมด TWO_WHEELER และหลีกเลี่ยงทางด่วนเสมอ
     """
     cache_data = load_cache()
     
-    # สร้างรหัส Hash จากพิกัดและโหมดการเดินทางเพื่อเช็ค Cache
-    route_key_raw = f"{pickup_latlng['lat']},{pickup_latlng['lng']}_{dropoff_latlng['lat']},{dropoff_latlng['lng']}_{mode}_{avoid_tolls}"
+    # สร้างรหัส Hash แบบล็อกโหมดมอเตอร์ไซค์
+    route_key_raw = f"{pickup_latlng['lat']},{pickup_latlng['lng']}_{dropoff_latlng['lat']},{dropoff_latlng['lng']}_TWO_WHEELER_avoidTolls"
     route_hash = hashlib.md5(route_key_raw.encode('utf-8')).hexdigest()
     
     if route_hash in cache_data["routes"]:
@@ -94,15 +95,16 @@ def get_route_polyline(pickup_latlng, dropoff_latlng, mode="TWO_WHEELER", avoid_
         "destination": {
             "location": { "latLng": { "latitude": dropoff_latlng['lat'], "longitude": dropoff_latlng['lng'] } }
         },
-        "travelMode": mode,
+        "travelMode": "TWO_WHEELER", # ล็อกเป็นโหมดรถจักรยานยนต์
         "languageCode": "th-TH",
-        "routingPreference": "TRAFFIC_AWARE"
+        "routingPreference": "TRAFFIC_AWARE",
+        "routeModifiers": {
+            "avoidTolls": True # ล็อกการหลีกเลี่ยงทางด่วน
+        }
     }
-    
-    if avoid_tolls:
-        payload["routeModifiers"] = {"avoidTolls": True}
         
-    resp = requests.post(routes_url, headers=headers, json=payload)
+    # ใส่ Timeout ป้องกันระบบค้าง (5 วินาทีเชื่อมต่อ, 15 วินาทีรอผลลัพธ์)
+    resp = requests.post(routes_url, headers=headers, json=payload, timeout=(5, 15))
     
     if resp.status_code != 200 or not resp.json().get("routes"):
         raise Exception(f"Routes API Error: {resp.text}")
