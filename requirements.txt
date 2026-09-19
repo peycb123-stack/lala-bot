@@ -9,4 +9,5 @@ googlemaps==4.10.0
 requests==2.31.0
 polyline==2.0.1
 shapely==2.0.2
+fiona==1.9.6
 geopandas==0.14.2
